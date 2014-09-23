@@ -53,7 +53,7 @@ YagsBP::YagsBP(const Params *params)
     printf("globalPredictorMask is %08x\n",this->globalPredictorMask);
     printf("globalHistoryUnusedMask is %08x\n",this->globalHistoryUnusedMask);
     //set up the threshold for branch prediction
-    this->choiceThreshold = (ULL(1) << (this->choiceCtrBits - 1)) - 1;;
+    this->choiceThreshold = (ULL(1) << (this->choiceCtrBits - 1)) - 1;
     this->globalPredictorThreshold = (ULL(1) << (this->globalCtrBits - 1)) - 1;
 
     //using 8 bits of address as tags.
