@@ -47,9 +47,10 @@ YagsBP::YagsBP(const Params *params)
     this->choicePredictorMask = this->choicePredictorSize - 1;
     this->globalPredictorMask = this->globalPredictorSize - 1;
     this->globalHistoryMask = mask(this->globalHistoryBits);
-    this->globalHistoryUnusedMask = this->globalHistoryMask - (this->globalHistoryMask >> (_SET_ASSOCITY - 1));
-    printf("globalCtrBits is %u\n",this->globalCtrBits);
+    this->globalHistoryUnusedMask = this->globalHistoryMask - (this->globalHistoryMask >> (ceilLog2(_SET_ASSOCITY)));
+    printf("globalHistoryBits is %u\n",this->globalHistoryBits);
     printf("globalHistoryMask is %08x\n",this->globalHistoryMask);
+    printf("globalPredictorMask is %08x\n",this->globalPredictorMask);
     printf("globalHistoryUnusedMask is %08x\n",this->globalHistoryUnusedMask);
     //set up the threshold for branch prediction
     this->choiceThreshold = (ULL(1) << (this->choiceCtrBits - 1)) - 1;;
@@ -106,7 +107,7 @@ YagsBP::lookup(Addr branchAddr, void * &bpHistory)
    	assert(choiceCountersIdx < this->choicePredictorSize);
    	assert(globalPredictorIdx < this->globalPredictorSize);
 
-   	uint32_t tag = ((branchAddr >> instShiftAmt) & this->tagsMask) | ((this->globalHistoryReg & this->globalHistoryUnusedMask) << (_SET_ASSOCITY - 1));
+   	uint32_t tag = ((branchAddr >> instShiftAmt) & this->tagsMask) | ((this->globalHistoryReg & this->globalHistoryUnusedMask) << (ceilLog2(_SET_ASSOCITY)));
    	BPHistory *history = new BPHistory;
   	history->globalHistoryReg = this->globalHistoryReg;
    	//printf("Getting choice prediction\n");
@@ -172,7 +173,7 @@ YagsBP::update(Addr branchAddr, bool taken, void *bpHistory, bool squashed)
     	unsigned choiceCountersIdx = ((branchAddr >> instShiftAmt) & this->choicePredictorMask);
     	//indexing into either takenPredictor or notTakenPredictor
     	unsigned globalPredictorIdx = ((branchAddr >> instShiftAmt) ^ history->globalHistoryReg) & this->globalPredictorMask;
-   		uint32_t tag = ((branchAddr >> instShiftAmt) & this->tagsMask) | ((history->globalHistoryReg & this->globalHistoryUnusedMask) << (_SET_ASSOCITY - 1));
+   		uint32_t tag = ((branchAddr >> instShiftAmt) & this->tagsMask) | ((history->globalHistoryReg & this->globalHistoryUnusedMask) << (ceilLog2(_SET_ASSOCITY)));
       assert(choiceCountersIdx < this->choicePredictorSize);
    		assert(globalPredictorIdx < this->globalPredictorSize);
     	switch(history->takenUsed)
@@ -412,7 +413,7 @@ void YagsBP::updateTakenCacheLRU(const unsigned idx, const uint8_t entry_idx)
 void YagsBP::updateNotTakenCacheLRU(const unsigned idx, const uint8_t entry_idx)
 {
   uint8_t threshold_used = this->notTakenCounters[idx].used[entry_idx];
-  this->notTakenCounters[idx].used[entry_idx] = _SET_ASSOCITY;
+  this->notTakenCounters[idx].used[entry_idx] = _SET_ASSOCITY - 1;
   for(uint8_t count = 0; count < _SET_ASSOCITY;count++)
   {
     if(this->notTakenCounters[idx].used[count] > threshold_used && count != entry_idx)
