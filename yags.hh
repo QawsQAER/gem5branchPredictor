@@ -19,6 +19,8 @@
  */
 
  #define _YAGS_TAG_LENGTH 8
+ #define _SET_ASSOCITY 1
+
 class YagsBP : public BPredUnit
 {
   public:
@@ -32,6 +34,21 @@ class YagsBP : public BPredUnit
 
   private:
     void updateGlobalHistReg(bool taken);
+
+    //init cache
+    void initCache();
+
+    //return true means hit, false means miss
+    bool lookupTakenCache(const unsigned idx,const uint32_t tag, bool *taken);
+    bool lookupNotTakenCache(const unsigned idx,const uint32_t tag, bool *taken);
+    
+
+    void updateTakenCache(const unsigned idx, const uint32_t tag,const bool taken);
+    void updateNotTakenCache(const unsigned idx, const uint32_t tag,const bool taken);
+
+    void updateTakenCacheLRU(const unsigned idx, const uint8_t entry_idx);
+    void updateNotTakenCacheLRU(const unsigned idx, const uint8_t entry_idx);
+
     struct BPHistory {
         unsigned globalHistoryReg;
         // was the taken array's prediction used?
@@ -55,9 +72,12 @@ class YagsBP : public BPredUnit
 
     struct CacheEntry
     {
-        SatCounter ctr;
-        uint32_t tag;
+        SatCounter ctr[_SET_ASSOCITY];
+        uint32_t tag[_SET_ASSOCITY];
+        uint8_t LRU;
+        uint8_t used[_SET_ASSOCITY];
     };
+
     // choice predictors
     std::vector<SatCounter> choiceCounters;
     // taken direction predictors

@@ -17,10 +17,10 @@
 YagsBP::YagsBP(const Params *params)
     : BPredUnit(params), instShiftAmt(params->instShiftAmt),
       globalHistoryReg(0),
-      globalHistoryBits(ceilLog2(params->globalPredictorSize)),
+      globalHistoryBits(ceilLog2(params->globalPredictorSize / _SET_ASSOCITY)),
       choicePredictorSize(params->choicePredictorSize),
       choiceCtrBits(params->choiceCtrBits),
-      globalPredictorSize(params->globalPredictorSize),
+      globalPredictorSize(params->globalPredictorSize / _SET_ASSOCITY),
       globalCtrBits(params->globalCtrBits)
 {
 	//judging the predictor size
@@ -42,15 +42,7 @@ YagsBP::YagsBP(const Params *params)
     	this->choiceCounters[count].setBits(this->choiceCtrBits);
     }
 
-    printf("Initilizing taken/notTaken counters with %u 1s\n",this->globalCtrBits);
-    for(uint32_t count = 0; count < this->globalPredictorSize; count++)
-    {
-    	this->takenCounters[count].ctr.setBits(this->globalCtrBits);
-    	this->takenCounters[count].tag = 0;
-    	this->notTakenCounters[count].ctr.setBits(this->globalCtrBits);
-    	this->notTakenCounters[count].tag = 0;
-    }
-
+    this->initCache();
     //set up the mask for indexing from branch address
     this->choicePredictorMask = this->choicePredictorSize - 1;
     this->globalPredictorMask = this->globalPredictorSize - 1;
@@ -102,7 +94,7 @@ bool
 YagsBP::lookup(Addr branchAddr, void * &bpHistory)
 {
 	//printf("Performing lookup\n");
-	bool choicePred, finalPred;
+	bool choicePred, finalPred = true;
 	unsigned choiceCountersIdx = ((branchAddr >> instShiftAmt) & this->choicePredictorMask);
 	//indexing into either takenPredictor or notTakenPredictor
    	unsigned globalPredictorIdx = ((branchAddr >> instShiftAmt) ^ this->globalHistoryReg) & this->globalPredictorMask;
@@ -120,10 +112,9 @@ YagsBP::lookup(Addr branchAddr, void * &bpHistory)
    	{
    		//the choice predict taken, try to look into notTaken predictor/cache
    		//printf("Getting taken prediction\n");
-   		if(tag == this->takenCounters[globalPredictorIdx].tag)
+   		if(lookupTakenCache(globalPredictorIdx,tag,&finalPred))
    		{
    			//printf("USING PREDICTION FROM TAKEN PREDICTOR\n");
-   			finalPred = this->takenCounters[globalPredictorIdx].ctr.read() > this->globalPredictorThreshold;
    			history->takenPred = finalPred;
    			history->takenUsed = 1;
    		}
@@ -137,10 +128,9 @@ YagsBP::lookup(Addr branchAddr, void * &bpHistory)
    	{
    		//the choice predict not taken, try to look into Taken predictor/cache
    		//printf("Getting not taken prediction\n");
-   		if(tag == this->notTakenCounters[globalPredictorIdx].tag)
+   		if(lookupNotTakenCache(globalPredictorIdx,tag,&finalPred))
    		{
    			//printf("USING PREDICTION FROM NOT TAKEN PREDICTOR\n");
-   			finalPred = this->notTakenCounters[globalPredictorIdx].ctr.read() > this->globalPredictorThreshold;
    			history->notTakenPred = finalPred;
    			history->takenUsed = 2;
    		}
@@ -179,7 +169,8 @@ YagsBP::update(Addr branchAddr, bool taken, void *bpHistory, bool squashed)
     	unsigned choiceCountersIdx = ((branchAddr >> instShiftAmt) & this->choicePredictorMask);
     	//indexing into either takenPredictor or notTakenPredictor
     	unsigned globalPredictorIdx = ((branchAddr >> instShiftAmt) ^ history->globalHistoryReg) & this->globalPredictorMask;
-   		assert(choiceCountersIdx < this->choicePredictorSize);
+   		uint32_t tag = (branchAddr >> instShiftAmt) & this->tagsMask;
+      assert(choiceCountersIdx < this->choicePredictorSize);
    		assert(globalPredictorIdx < this->globalPredictorSize);
     	switch(history->takenUsed)
     	{
@@ -197,22 +188,19 @@ YagsBP::update(Addr branchAddr, bool taken, void *bpHistory, bool squashed)
     			else if(history->finalPred == false && taken == true)
     			{
     				//update the taken predictor(cache)
-    				this->takenCounters[globalPredictorIdx].tag = (branchAddr >> instShiftAmt) & this->tagsMask;
-    				this->takenCounters[globalPredictorIdx].ctr.increment();
+            this->updateTakenCache(globalPredictorIdx,tag,taken);
     				this->choiceCounters[choiceCountersIdx].increment();
 
     			}
     			else if(history->finalPred == true && taken == false)
     			{
     				//update the not taken predictor(cache)
-    				this->notTakenCounters[globalPredictorIdx].tag = (branchAddr >> instShiftAmt) & this->tagsMask;
-    				this->notTakenCounters[globalPredictorIdx].ctr.decrement();
+            this->updateNotTakenCache(globalPredictorIdx,tag,taken);
     				this->choiceCounters[choiceCountersIdx].decrement();
     			}
     		break;
     		case 1:
     			//the taken predictor was used, choice predictor indicates not taken
-    			this->takenCounters[globalPredictorIdx].tag = (branchAddr >> instShiftAmt) & this->tagsMask;
     			if(taken == history->takenPred && (!taken) == false)
     			{
     				
@@ -224,20 +212,10 @@ YagsBP::update(Addr branchAddr, bool taken, void *bpHistory, bool squashed)
     				else
     					this->choiceCounters[choiceCountersIdx].decrement();
     			}
-    			if(taken)
-    			{
-    				//choicePredictor bias not taken and the result is taken
-    				this->takenCounters[globalPredictorIdx].ctr.increment();
-    			}
-    			else
-    			{
-    				//choicePredictor bias not taken and the result is not taken
-    				this->takenCounters[globalPredictorIdx].ctr.decrement();
-    			}
+          this->updateTakenCache(globalPredictorIdx,tag,taken);
     		break;
     		case 2:
     			//the not taken predictor was used
-    			this->notTakenCounters[globalPredictorIdx].tag = (branchAddr >> instShiftAmt) & this->tagsMask;
     			if(taken == history->notTakenPred && (!taken) == true)
     			{
     				
@@ -249,17 +227,7 @@ YagsBP::update(Addr branchAddr, bool taken, void *bpHistory, bool squashed)
     				else
     					this->choiceCounters[choiceCountersIdx].decrement();
     			}
-
-    			if(taken)
-    			{
-    				//choicePredictor bias taken and the result is taken
-    				this->notTakenCounters[globalPredictorIdx].ctr.increment();
-    			}
-    			else
-    			{
-    				//choicePredictor bias taken and the result is not taken
-    				this->notTakenCounters[globalPredictorIdx].ctr.decrement();
-    			}
+          this->updateNotTakenCache(globalPredictorIdx,tag,taken);
     		break;
     	}
 
@@ -298,4 +266,155 @@ YagsBP::updateGlobalHistReg(bool taken)
 {
     this->globalHistoryReg = taken ? this->globalHistoryReg << 1 | 1 : this->globalHistoryReg << 1;
     this->globalHistoryReg = this->globalHistoryReg & this->globalHistoryMask;
+}
+
+bool YagsBP::lookupTakenCache(const unsigned idx,const uint32_t tag, bool *taken)
+{
+  bool found = 0;
+  for(uint8_t count = 0;count < _SET_ASSOCITY;count++)
+  {
+    if(this->takenCounters[idx].tag[count] == tag)
+    {
+      this->updateTakenCacheLRU(idx,count);  
+      *taken = this->takenCounters[idx].ctr[count].read() > this->globalPredictorThreshold;
+      found = true;
+      return true;
+    }
+  }
+
+  if(found)
+    return true;
+  else
+    return false;
+}
+
+bool YagsBP::lookupNotTakenCache(const unsigned idx,const uint32_t tag,bool *taken)
+{
+
+  bool found = 0;
+  for(uint8_t count = 0;count < _SET_ASSOCITY;count++)
+  {
+    if(this->notTakenCounters[idx].tag[count] == tag)
+    {
+      this->updateNotTakenCacheLRU(idx,count);
+      *taken = this->notTakenCounters[idx].ctr[count].read() > this->globalPredictorThreshold;
+      found = true;
+      return true;
+    }
+  }
+
+  if(found)
+    return true;
+  else
+    return false;
+}
+
+void YagsBP::updateTakenCache(const unsigned idx, const uint32_t tag,const bool taken)
+{
+  bool found = false;
+  for(uint8_t count = 0;count < _SET_ASSOCITY;count++)
+  {
+    if(this->takenCounters[idx].tag[count] == tag)
+    {
+      this->updateTakenCacheLRU(idx,count);
+      if(taken)
+        this->takenCounters[idx].ctr[count].increment();
+      else
+        this->takenCounters[idx].ctr[count].decrement();
+      found = true;
+    }
+  }
+  //if did not find any matching tag
+  //replace the least-recently-used one
+  
+  if(!found)
+  {
+    uint8_t LRU = this->takenCounters[idx].LRU;
+    this->takenCounters[idx].tag[LRU] = tag;
+    //reset the counter
+    this->takenCounters[idx].ctr[LRU].setBits(this->globalCtrBits);
+    
+    if(taken)
+      this->takenCounters[idx].ctr[LRU].increment();
+    else
+      this->takenCounters[idx].ctr[LRU].decrement();
+    
+  }
+}
+
+void YagsBP::updateNotTakenCache(const unsigned idx, const uint32_t tag,const bool taken)
+{
+  bool found = false;
+  for(uint8_t count = 0;count < _SET_ASSOCITY;count++)
+  {
+    if(this->notTakenCounters[idx].tag[count] == tag)
+    {
+      this->updateNotTakenCacheLRU(idx,count);
+      if(taken)
+        this->notTakenCounters[idx].ctr[count].increment();
+      else
+        this->notTakenCounters[idx].ctr[count].decrement();
+
+      found = true;
+    }
+  }
+  //if did not find any matching tag
+  //replace the least-recently-used one
+  if(!found)
+  {
+    uint8_t LRU = this->takenCounters[idx].LRU;
+    this->notTakenCounters[idx].tag[LRU] = tag;
+    //reset the counter 
+    this->notTakenCounters[idx].ctr[LRU].setBits(this->globalCtrBits);
+    if(taken)
+      this->notTakenCounters[idx].ctr[LRU].increment();
+    else
+      this->notTakenCounters[idx].ctr[LRU].decrement();
+  }
+}
+
+void YagsBP::initCache()
+{
+    printf("Initilizing taken/notTaken counters with %u 1s\n",this->globalCtrBits);
+    for(uint32_t count = 0; count < this->globalPredictorSize; count++)
+    {
+      for(uint8_t count_entry = 0;count_entry < _SET_ASSOCITY;count_entry++)
+      {
+        this->takenCounters[count].ctr[count_entry].setBits(this->globalCtrBits);
+        this->takenCounters[count].tag[count_entry] = 0;
+        this->takenCounters[count].used[count_entry] = count_entry;
+        this->notTakenCounters[count].ctr[count_entry].setBits(this->globalCtrBits);
+        this->notTakenCounters[count].tag[count_entry] = 0;
+        this->notTakenCounters[count].used[count_entry] = count_entry;
+      }
+      this->takenCounters[count].LRU = 0;
+      this->notTakenCounters[count].LRU = 0;
+    }
+    printf("Cache initilization done\n");
+}
+
+void YagsBP::updateTakenCacheLRU(const unsigned idx, const uint8_t entry_idx)
+{
+  uint8_t threshold_used = this->takenCounters[idx].used[entry_idx];
+  this->takenCounters[idx].used[entry_idx] = _SET_ASSOCITY - 1;
+  for(uint8_t count = 0; count < _SET_ASSOCITY;count++)
+  {
+    if(this->takenCounters[idx].used[count] > threshold_used && count != entry_idx)
+      this->takenCounters[idx].used[count]--;
+    if(this->takenCounters[idx].used[count] == 0)
+      this->takenCounters[idx].LRU = count;
+  }
+}
+
+void YagsBP::updateNotTakenCacheLRU(const unsigned idx, const uint8_t entry_idx)
+{
+  uint8_t threshold_used = this->notTakenCounters[idx].used[entry_idx];
+  this->notTakenCounters[idx].used[entry_idx] = _SET_ASSOCITY;
+  for(uint8_t count = 0; count < _SET_ASSOCITY;count++)
+  {
+    if(this->notTakenCounters[idx].used[count] > threshold_used && count != entry_idx)
+      this->notTakenCounters[idx].used[count]--;
+    if(this->notTakenCounters[idx].used[count] == 0)
+      this->notTakenCounters[idx].LRU = count;
+  }
 }
