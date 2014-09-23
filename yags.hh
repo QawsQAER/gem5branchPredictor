@@ -18,8 +18,9 @@
  * Note: Do not change name of class
  */
 
- #define _YAGS_TAG_LENGTH 8
+
  #define _SET_ASSOCITY 1
+ #define _YAGS_TAG_LENGTH 8
 
 class YagsBP : public BPredUnit
 {
@@ -90,6 +91,7 @@ class YagsBP : public BPredUnit
     unsigned globalHistoryReg;
     unsigned globalHistoryBits;
     unsigned globalHistoryMask;
+    unsigned globalHistoryUnusedMask;
 
     unsigned choicePredictorSize;
     unsigned choiceCtrBits;
